@@ -1,0 +1,14 @@
+services:
+  api:
+    container_name: cep-resilient-api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CEP_PROVIDER_TIMEOUT_MS: ${CEP_PROVIDER_TIMEOUT_MS:-2000}
+    ports:
+      - "${PORT:-3000}:3000"
+    restart: unless-stopped

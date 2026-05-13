@@ -1,49 +1,144 @@
-# Teste Técnico - Desenvolvedor
+# API de CEP Resiliente
 
-## O problema
+API NestJS/TypeScript para consulta de CEP com dois providers externos, alternancia entre eles, fallback automatico e contrato de resposta unificado.
 
-Você precisa criar uma API que consulta CEP. Simples, certo?
+## Endpoint
 
-Só que: você não controla as APIs externas. Elas caem, demoram, retornam erro. Seu serviço precisa continuar funcionando.
+`GET /cep/:cep`
 
-## APIs disponíveis
+Exemplo:
+
+```bash
+curl http://localhost:3000/cep/01310-930
+```
+
+Resposta:
+
+```json
+{
+  "cep": "01310930",
+  "state": "SP",
+  "city": "Sao Paulo",
+  "neighborhood": "Bela Vista",
+  "street": "Avenida Paulista",
+  "provider": "via-cep"
+}
+```
+
+## Providers suportados
 
 - ViaCEP: `https://viacep.com.br/ws/{cep}/json/`
 - BrasilAPI: `https://brasilapi.com.br/api/cep/v1/{cep}`
 
-## Requisitos
+## Estrategia de resiliencia
 
-### Endpoint
-`GET /cep/{cep}`
+- Alternancia entre providers com `round-robin`
+- Timeout por provider via `CEP_PROVIDER_TIMEOUT_MS` (default: `2000`)
+- tratamento explicito de **HTTP 429** dos providers como categoria `rate_limited`, com `Retry-After` nos detalhes quando existir
+- Cache em memoria com TTL para reduzir latencia e dependencia externa
+- `stale-if-error`: quando os providers falham, a API ainda pode servir um valor recente de cache
+- Circuit breaker simples por provider para evitar insistir em um upstream doente
+- Contrato unico de resposta, independente da API externa que respondeu
+- Request ID por requisicao para correlacionar logs fim a fim
+- Logs estruturados para inicio da consulta, tentativas, fallback, sucesso e falha final
 
-### Comportamento esperado
-- Alterna entre as duas APIs (pode ser aleatório ou round-robin)
-- Se uma falhar, tenta a outra automaticamente
-- Retorna um contrato único, independente de qual API respondeu
+## Regras de erro
 
-### O que queremos ver
+- `400`: CEP invalido
+- `404`: CEP nao encontrado em todos os providers
+- `503`: indisponibilidade dos providers, falhas mistas, ou **rate limit em todos** (`CEP_PROVIDERS_RATE_LIMITED`)
+- `504`: timeout em todas as tentativas
 
-1. **Abstração** — Como você isola os providers externos? Se amanhã adicionarmos uma terceira API, o que muda no código?
+Formato de erro:
 
-2. **Resiliência** — O que acontece quando uma API demora 30 segundos? E quando as duas estão fora?
+```json
+{
+  "code": "CEP_PROVIDERS_UNAVAILABLE",
+  "message": "All CEP providers are temporarily unavailable",
+  "details": {
+    "cep": "01310930"
+  }
+}
+```
 
-3. **Observabilidade** — Se der erro em produção, como a gente descobre o que aconteceu?
+## Arquitetura
 
-4. **Tratamento de erros** — Erros diferentes devem ter tratamentos diferentes. Timeout não é a mesma coisa que 404.
+O fluxo principal segue a separacao:
 
-## Stack
+`Controller -> Validation -> Service -> ProviderStrategy -> Provider -> Mapper`
 
-NestJS + TypeScript. Fora isso, use o que fizer sentido.
+Arquivos mais importantes:
 
-## O que não estamos avaliando
+- `src/modules/cep/cep.controller.ts`
+- `src/modules/cep/cep.service.ts`
+- `src/modules/cep/strategy/provider-rotator.service.ts`
+- `src/modules/cep/providers/via-cep.provider.ts`
+- `src/modules/cep/providers/brasil-api.provider.ts`
+- `src/modules/cep/mappers/cep.mapper.ts`
+- `src/common/filters/http-exception.filter.ts`
 
-- Frontend
-- Banco de dados
-- Deploy
-- Cobertura de testes de 100%
+## Documentacao
 
-## Como entregar
+A API expoe a especificacao OpenAPI em:
 
-Fork este repositório, implemente, e envie o link para [matheus.morett@monest.com.br](mailto:matheus.morett@monest.com.br) com o assunto **Teste Dev - Monest**.
+- `GET /openapi.json`
 
-Se o repositório for privado, adicione `matheusmorett2` como colaborador
+E a interface do Scalar em:
+
+- `GET /internal/docs`
+- `GET /v1/docs`
+
+## Observabilidade
+
+- Header `x-request-id` gerado automaticamente ou reaproveitado quando enviado pelo client
+- Logs com `requestId`, provider tentado, fallback, latencia e classificacao da falha
+- Cache hit, cache stale e refresh do cache registrados em log
+- Estado do circuit breaker refletido em logs de tentativa
+
+## Como rodar
+
+```bash
+npm install
+npm run start:dev
+```
+
+## Rodando com Docker
+
+```bash
+docker compose up --build
+```
+
+Com a stack subida:
+
+- API: `http://localhost:3000`
+- OpenAPI: `http://localhost:3000/openapi.json`
+- Scalar docs: `http://localhost:3000/internal/docs`
+
+Variaveis opcionais:
+
+- `PORT`: porta HTTP da aplicacao
+- `LOG_LEVEL`: nivel do logger Pino
+- `CEP_PROVIDER_TIMEOUT_MS`: timeout por tentativa de provider
+- `CEP_CACHE_TTL_MS`: janela em que o cache e considerado fresco
+- `CEP_CACHE_STALE_TTL_MS`: janela adicional em que o cache pode ser usado como `stale-if-error`
+- `CEP_CIRCUIT_BREAKER_FAILURE_THRESHOLD`: numero de falhas consecutivas para abrir o circuito
+- `CEP_CIRCUIT_BREAKER_RESET_TIMEOUT_MS`: tempo de espera para testar novamente um provider aberto
+
+## Testes
+
+```bash
+npm test
+npm run build
+```
+
+A suite cobre:
+
+- rotacao de providers
+- cache fresh e stale
+- abertura e recuperacao do circuit breaker
+- sucesso direto e fallback
+- CEP inexistente
+- indisponibilidade total
+- timeout total
+- validacao HTTP do endpoint
+- propagacao do `x-request-id`
