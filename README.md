@@ -77,6 +77,51 @@ Arquivos mais importantes:
 - `src/modules/cep/mappers/cep.mapper.ts`
 - `src/common/filters/http-exception.filter.ts`
 
+## Fluxos (Mermaid)
+
+### Da requisicao HTTP ate a resposta
+
+```mermaid
+flowchart TD
+  client[Cliente_HTTP] --> edge[Express_Nest]
+  edge --> reqId[RequestIdMiddleware]
+  reqId -->|"gera ou reusa x-request-id"| store[RequestContextService_AsyncLocalStorage]
+  store --> route[Rotas_CepController]
+  route --> validate[ZodValidationPipe_cep]
+  validate -->|invalido| err400[AppError_400]
+  validate -->|valido| svc[CepService_getCep]
+  svc -->|sucesso| json200[JSON_200_contrato_unico]
+  svc -->|AppError| filt[HttpExceptionFilter]
+  err400 --> filt
+  filt --> jsonErr[JSON_erro_code_message_details]
+  json200 --> client
+  jsonErr --> client
+```
+
+### Nucleo da consulta no `CepService`
+
+```mermaid
+flowchart TD
+  start[Inicio_getCep_CEP_validado] --> fresh{Cache_fresco_para_esse_CEP}
+  fresh -->|sim| hit[Retorna_valor_do_cache_LOG_hit]
+  fresh -->|nao| rr[RoundRobin_ordem_inicial]
+  rr --> cb[CircuitBreaker_prioriza_providers]
+  cb --> loop{Tem_proximo_provider_na_fila}
+  loop -->|nao| agg[Monta_erro_final_a_partir_das_tentativas]
+  loop -->|sim| try[Chama_provider_lookup_timeout_fetch]
+  try -->|sucesso| save[Cache_set_LOG_sucesso]
+  save --> ok[Retorna_DTO_normalizado]
+  try -->|ProviderError| rec[CircuitBreaker_recordFailure_LOG_warn]
+  rec --> loop
+  agg --> stale{Existe_cache_stale_valido}
+  stale -->|sim| stResp[Retorna_cache_stale_LOG_stale_if_error]
+  stale -->|nao| throw[Propaga_AppError_final]
+  hit --> endNode[Fim]
+  ok --> endNode
+  stResp --> endNode
+  throw --> endNode
+```
+
 ## Documentacao
 
 A API expoe a especificacao OpenAPI em:
